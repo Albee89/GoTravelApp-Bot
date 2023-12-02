@@ -1,13 +1,18 @@
 #!/usr/bin/env python3.7
-from flask import Flask, redirect, url_for, request, render_template, request, template_rendered
+
+#importing a lot of libraries:
+from flask import Flask, render_template, request, redirect, jsonify, url_for, g
 import requests
 from dotenv import load_dotenv
 from flask_wtf import FlaskForm
 from wtforms import SelectField, SubmitField
 from wtforms.validators import InputRequired
 import os
-
-
+from chatterbot import ChatBot
+from chatterbot.trainers import ChatterBotCorpusTrainer
+import sqlite3
+import pandas as pd
+from io import StringIO
 
 # Defining a decorator that has been added in:
 def hello_decorator(func):
@@ -40,6 +45,18 @@ function_to_be_used = hello_decorator(function_to_be_used)
 # calling the function
 function_to_be_used()
 
+
+
+# Database setup
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect('alex_b.db')
+    return db
+
+
+
+
 # Adding in bloggers itinerary as locations for locations selector:
 locations = {
     "Lake District National Park": {"lat": 54.4609, "lng": -3.0886},
@@ -62,15 +79,24 @@ class LocationForm(FlaskForm):  # class attributes:
     submit = SubmitField('Submit')
 
 
+# Importing the CSV files/reading CSV into DataFrame
+locations_list = pd.read_csv('blog_locations.csv')
+
+# Viewing the DF:
+print(locations_list.shape)
+print(locations_list.head())
+
+
+# Initialize Flask app
 app = Flask(__name__)
 
-
 # Set the secret key in your Flask app config
-load_dotenv("../weather1.env")
-load_dotenv("../google.env")
-load_dotenv("../weather_3.env")
-load_dotenv("../we2.env")
-load_dotenv("../secret.env")
+load_dotenv("venv/weather1.env")
+load_dotenv("venv/google.env")
+load_dotenv("venv/weather_3.env")
+load_dotenv("venv/we2.env")
+load_dotenv("venv/secret.env")
+load_dotenv("../.env")
 
 # Retrieve API keys from the environment, access variable, with a default value if not found on SECRET_KEY:
 API_key = os.getenv("weather_api")
@@ -78,30 +104,88 @@ google_API = os.getenv("google_API")
 weather_key = os.getenv("weather_3")
 API_KEY2 = os.getenv("API_KEY2")
 SECRET_KEY = os.environ.get('SECRET_KEY', 'abc123ced456')
+chatbot_weather = os.getenv("chatbot_weather")
+
 
 app.config['SECRET_KEY'] = SECRET_KEY
 
 
+# Creating a chatbot instance:
+my_bot= ChatBot(
+    name="Allie",
+    read_only=True,
+    storage_adapter='chatterbot.storage.SQLStorageAdapter', database_uri='sqlite:///database.sqlite3',
+    logic_adapters=["chatterbot.logic.MathematicalEvaluation", "chatterbot.logic.BestMatch"])
 
-# app configs, added in sqlite to call later at weather_data:
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'  # using sqlite
-#db = SQLAlchemy(app)
+
+# Create a new trainer
+trainer = ChatterBotCorpusTrainer(my_bot)
+
+# Train the chatbot (you can customize this based on your needs)
+trainer.train("chatterbot.corpus.english")
+trainer.train("chatterbot.corpus.english.conversations")
 
 
-# importing model/database to be called by get_weather function:
-#class weatherModel(db.Model):
-    #id = db.Column(db.Integer, primary_key=True)
-    #city = db.Column(db.String(50), nullable=False)
-    #description = db.Column(db.String(100))
-    #temperature = db.Column(db.Float)
-    #humidity = db.Column(db.Float)
-#def __repr__(self):
-    #return f"User('{self.username}', '{self.email}')"
+
+# Insert sample data into the responses table
+#cursor.execute("INSERT INTO weather_appy_data (keyword, response) VALUES (?, ?)", ('hello', 'Hi there!'))
+#cursor.execute("INSERT INTO responses (keyword, response) VALUES (?, ?)", ('goodbye', 'Goodbye!'))
+# Create the responses table if it doesn't exist
+
+##########Connect to the database ###################
+
+# Read data from CSV file using pandas
+locations_df = pd.read_csv('blog_locations.csv')
+
+conn = sqlite3.connect('ab_db.db')
+cursor = conn.cursor()
+
+# Creating the table if it doesn't exist
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS appy_bot_chat (
+        name TEXT,
+        temp FLOAT,
+        datetime TEXT
+    )
+''')
+
+# Iterate through rows and insert data into the database
+for index, row in locations_df.iterrows():
+    name = row['name']
+    temperature = row['temp']
+    datetime = row['datetime']
+    conn.cursor()
+
+    # Executing INSERT query:
+    cursor.execute("INSERT INTO appy_bot_chat (name, temp, datetime) VALUES (?, ?, ?)", (name, temperature, datetime))
+
+# Committing changes:
+conn.commit()
+
+
+@app.route('/chatbot', methods=['GET', 'POST'])
+def chatbot():
+    if request.method == 'POST':
+        user_input = request.form.get('user_input')
+        if not user_input:
+            return jsonify({'error': 'User input parameter is required'}), 400
+
+        # Executing chatbot logic:
+        bot_response = str(my_bot.get_response(user_input))
+
+        # Closing connection:
+        conn.close()
+
+        return render_template('index.html', chatbot_response=bot_response)
+
+    # Handle GET requests if needed
+    return render_template('index.html')
 
 
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return render_template("base.html")
+
 
 
 @app.route('/search', methods=['GET', 'POST'])
@@ -178,65 +262,17 @@ def weather():
 
     return render_template('weather.html', form=form)
 
+#closing down the app after use:
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
 
-# Endpoint for the chatbot:
-@app.route('/chatbox_data', methods=['POST'])
-def chatbot_data():
-    data = request.get_json()
-
-    # Extract city from the request
-    city = data.get('city')
-
-    # If city is provided, pull the weather information from API and jsonify:
-    if city:
-        weather_data = get_chat_data(city)
-        return jsonify({'response': weather_data})
-    else:
-        return jsonify({'response': 'Please provide a city in the request.'})
-
-
-def get_chat_data(city):  # Checking if weather data for the city is already in the database:
-    weather_record = Weather_Model.query.filter_by(city=city).first()
-    if weather_record:
-        return f'The weather in {city} is {weather_record.description}. Temperature: {weather_record.temperature}°C, Humidity: {weather_record.humidity}%.'
-    # If not in the database, fetch from the API:
-    url = f'http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY2}'
-
-    try:
-        response = requests.get(url)
-        data = response.json()
-
-        if response.status_code == 200:
-            # Extract relevant weather information
-            description = data['weather'][0]['description']
-            temperature = data['main']['temp']
-            humidity = data['main']['humidity']
-
-            # Save the data to the database
-            new_weather = Weather_Model(city=city, description=description, temperature=temperature, humidity=humidity)
-            db.session.add(new_weather)
-            db.session.commit()
-
-            return f'The weather in {city} is {description}. Temperature: {temperature}°C, Humidity: {humidity}%.'
-        else:
-            return "Whoops- that\'s an error! Please try again"
-    except Exception as e:
-        return f'An error occurred: {str(e)}'
-
-
-# Registering Swagger documentation blueprint
-##SWAGGER_URL = '/api/docs'  # URL for exposing Swagger UI (without trailing '/')
-#API_URL = '/static/swagger.json'  # URL for accessing the API documentation
-#swagger_blueprint = swagger_ui_blueprint(
-    #SWAGGER_URL,
-    #API_URL,
-    #config={
-       # 'app_name': "Your API Documentation"
-    #}
-#)
-#app.register_blueprint(swagger_blueprint, url_prefix=SWAGGER_URL)
-
+# closing out the flask app:
 with app.app_context():
     if __name__ == "__main__":
-        #db.create_all()
         app.run(debug=True)
+
+
+
